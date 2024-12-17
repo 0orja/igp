@@ -1,0 +1,17 @@
+Q1. In A0-trace.txt, two packets are originated by r0 with destination r2, one at time 2 and the other at time 15. The first packet does not reach its destination, while the second is correctly received by r2. Can any IGP implementation (different from the baseline solution) avoid dropping the packet originated by r0 at time 2? Explain why or why not.
+
+Q1. It cannot. Since r0 is not directly connected to r2, it will have to wait for a control plane from one of the other routers to have an entry for r2. In the best case, r0 will be able to send a packet successfullly to r2 at time 3. 
+-----------------
+Q2. In A2-trace.txt, explain why the two data packets sent from r1 to r3 at time 15 follow different paths. After doing so, suppose that we also send two packets from r3 to r1 at time 15: would the two packets from r3 to r1 follow different paths too? Motivate your answer.
+
+Q2. r1 has two paths of equal cost for destination r3, following ECMP, so both paths are used for forwarding packets. This won't be the case if we send two packets from r3 to r1. The link between r1 and r3 is assymetric, with a higher cost for sending from r1 to r3 than from r3 to r1, therefore the next hop for packets from r3 to r1 will always be r1. 
+-----------------
+Q3. In A3-trace.txt, router r2 is much slower to process IGP messages than all other routers. Setting updateInterval to 10 in A3-config.json indeed means that r2 sends and receives IGP messages every 10 time units. Describe the effect of this setting on routing and forwarding: what is its impact on path computations? What is its impact on packet delivery?
+
+Q3.
+-----------------
+
+Q4. In B1-trace.txt, all the routers process routing packets every 5 time units (see B1-config.json) and hence slower than they process data packets. This is realistic, at least to some extent, because data packets are forwarded in hardware while control-plane packets are processed in software -- although the speed difference may be different than 5x in reality. Summarize how the failure of the link between r3 and r4 impacts the forwarding of data packets sent at time 30 in this test.
+
+-----------------
+Q5. The absence of a forwarding entry for an existing destination in a router is often referred to as blackhole. Failures can cause both temporary and permanent blackholes: the former are fixed when the IGP reconverges, while the latter are never fixed. Indicate a trace among the provided ones showing evidence of a temporary blackhole, and a trace exposing a permanent blackhole. 
