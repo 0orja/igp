@@ -40,29 +40,77 @@ class IGP(AbstractRoutingDaemon):
     
     def compute_path(self):
         print("RUNNING DIJKSTRA")
-        graph_data = []
-        for node, lsa in self._lsa_db.items():
-            for link, weight in lsa.links.items():
-                edge = (node, link, {"weight": weight})
-                graph_data.append(edge)
-        graph = nx.DiGraph(graph_data)
-        #print(graph_data)
-        paths = nx.single_source_dijkstra_path(graph, self._id)
-        #print(paths)
-        lengths = nx.single_source_dijkstra_path_length(graph, source=self._id)
+        # graph_data = []
+        # for node, lsa in self._lsa_db.items():
+        #     for link, weight in lsa.links.items():
+        #         edge = (node, link, {"weight": weight})
+        #         graph_data.append(edge)
+        # graph = nx.DiGraph(graph_data)
+        # #print(graph_data)
+        # paths = nx.single_source_dijkstra_path(graph, self._id)
+        # #print(paths)
+        # lengths = nx.single_source_dijkstra_path_length(graph, source=self._id)
+        # if self._paths != paths:
+        #     #print("updating table")
+        #     self.update_table(paths)
+        #     self._paths = paths
+        # return paths
+        print(self._lsa_db)
+        paths = {router: {"distance": INF, "paths": []} for router in self._lsa_db}
+        paths[self._id]["distance"] = 0
+        paths[self._id]["paths"] = [[self._id]]
+        visited = set()
+        routers = list(self._lsa_db.keys())
+        while routers:
+            router = min(routers, key=lambda r: paths[r]["distance"])
+            #print(paths[router]["distance"])
+            if paths[router]["distance"] == INF:
+                continue
+            print(f"Processing router: {router}, current distance: {paths[router]['distance']}")
+            print(paths)
+            visited.add(router)
+            lsa = self._lsa_db[router]
+            for dest, cost in lsa.links.items():
+                dist = paths[router]["distance"] + cost
+                existing = paths.get(dest)
+                if existing:
+                    existing = existing["distance"]
+                else:
+                    existing = INF
+                print(f"Neighbor: {dest}, Link cost: {cost}, New distance: {dist}, "
+                       f"Existing distance: {existing}")
+                if dist < existing:
+                    print(f"Updating path to {dest} via {router}")
+                    if existing == INF:
+                        paths[dest] = {"distance": INF, "paths": []}
+                    paths[dest]["distance"] = dist
+                    print(f"{paths[dest]["paths"]} --> {paths[router]["paths"][0]+[dest]}")
+                    paths[dest]["paths"] = [path + [dest] for path in paths[router]["paths"]]
+                elif dist == existing:
+                    paths[dest]["paths"].extend(
+                        [path + [dest] for path in paths[router]["paths"]]
+                    )
+            routers.remove(router)
+        print("done")
         if self._paths != paths:
-            #print("updating table")
             self.update_table(paths)
             self._paths = paths
         return paths
     
     def update_table(self, paths):
-        for dest, hops in paths.items():
+        print(paths)
+        for dest, path in paths.items():
             if dest == self._id:
                 continue
-            if len(hops) > 1 and hops[0] == self._id:
-                iface = self._links[hops[1]]
-                self._fwd_table.setEntry(dest, [iface])
+            rt = self.rt_lookup(dest)
+            ifaces = []
+            for p in path["paths"]:
+                if len(p) > 1 and p[0] == self._id:
+                    iface = self._links[p[1]]
+                    ifaces.append(iface)
+            for i in ifaces:
+                if i not in rt:
+                    self._fwd_table.setEntry(dest, ifaces) # repalace whole entry if any iface is misisng
 
     def get_metric(self, dest):
         try:
@@ -120,7 +168,7 @@ class IGP(AbstractRoutingDaemon):
                     del self._sentPerInterface[i]
                     link_down_detected = False
                     self.generateRoutingPacket(i)
-                elif currentTime <= 7 or not currentTime%5:
+                elif currentTime <= 15 or not currentTime%5:
                     if i in self._sentPerInterface:
                         del self._sentPerInterface[i]
         if self._should_compute_path == True and self._lsa_db:
@@ -169,6 +217,8 @@ class IGP(AbstractRoutingDaemon):
                         self._sentPerInterface = {iface: self._sentPerInterface[iface]}
                         self._last_lsa = lsa
                         self._should_compute_path = True
+                        for iface in self._links.values():
+                            self.generateRoutingPacket(iface)
                 elif lsa.seq < stored.seq:
                     print("sending an updated lsa on interface {}".format(iface))
                     if iface in self._sentPerInterface:
@@ -182,8 +232,6 @@ class IGP(AbstractRoutingDaemon):
                     # if self._should_compute_path: 
                     #     self.compute_path()
                     #     self._should_compute_path = False
-
-
     "Generator of control-plane packet to be sent out of the input interface in the current round. It must return a RoutingPacket object, or None (if no packet needs to be sent)."
     def generateRoutingPacket(self, iface):
         pkt = None
