@@ -5,7 +5,6 @@ from packet import RoutingPacket,Payload
 import networkx as nx
 
 INF = 10000
-test_routers = ["Newark", "Phoenix,","SaltLakeCity", "Dallas", "Chicago", "Rochester","WashingtonDC", "Minneapolis"]
 
 @dataclass
 class LSA:
@@ -25,7 +24,6 @@ class IGP(AbstractRoutingDaemon):
         self._sentPerInterface = {}
         self._weights = {} 
         self._fwd_table = {}
-        self._metrics = {}
         self._neighbors = {}
         self._lsa_db: Dict[str, LSA] = {}
         self._lsa_queue: Dict[str, List[LSA]] = {}
@@ -35,10 +33,11 @@ class IGP(AbstractRoutingDaemon):
         self._paths = {}
         self._inf = 10000
         self._seq_no = 0  # Initialize sequence number
+        self._down_detected_links = []
     
     def compute_path(self):
-        #print("RUNNING DIJKSTRA")
-        #print(self._lsa_db)
+        if self._id == "r6":
+            print("RUNNING DIJKSTRA")
         paths = {router: {"distance": INF, "paths": []} for router in self._lsa_db}
         paths[self._id]["distance"] = 0
         paths[self._id]["paths"] = [[self._id]]
@@ -46,10 +45,11 @@ class IGP(AbstractRoutingDaemon):
         routers = list(self._lsa_db.keys())
         while routers:
             router = min(routers, key=lambda r: paths[r]["distance"])
-            #print(router)
             if paths[router]["distance"] == INF:
                 #print(paths)
-                continue
+                print("{} can't reach {}".format(self._id, router))
+                #print(self._lsa_db)
+                break
             #print(f"Processing router: {router}, current distance: {paths[router]['distance']}")
             visited.add(router)
             lsa = self._lsa_db[router]
@@ -72,9 +72,14 @@ class IGP(AbstractRoutingDaemon):
             routers.remove(router)
         #print("done")
         if self._paths != paths:
+            # if self._id == "r5":
+            #     print("updating table")
             self.update_table(paths)
             self._paths = paths
        # print(paths)
+        if self._id == "r6":
+            #print(self._lsa_db)
+            print(paths)
         return paths
     
     def update_table(self, paths):
@@ -89,17 +94,8 @@ class IGP(AbstractRoutingDaemon):
                     for interface, neighbor in self._neighbors.items():
                         if neighbor == p[1]:
                             ifaces.append(interface)
-            for i in ifaces:
-                if i not in rt:
-                    self._fwd_table.setEntry(dest, ifaces) # repalace whole entry if any iface is misisng
-
-    def get_metric(self, dest):
-        try:
-            return self._metrics[dest] 
-        except KeyError:
-            print("Destination {} was not found in metrics".format(dest))
-    def set_metric(self, dest, metric):
-        self._metrics[dest] = metric
+            if rt != ifaces:
+                self._fwd_table.setEntry(dest, ifaces) # repalace whole entry if different
 
     def rt_lookup(self, dest):
         return self._fwd_table.getNextHops(dest)
@@ -116,57 +112,81 @@ class IGP(AbstractRoutingDaemon):
         print("[IGP] Current forwarding table of {}\n{}".format(router_id,fwd_table.getDescription(router_id)))
         fwd_table.setEntry(router_id, ["local"] )
         self._fwd_table = fwd_table
-        self._metrics = {self._id: 0}
 
     ## Interactions with Router object ##
 
     "Refresher that is run at the beginning of every simulation round."
     def update(self, interfaces2state, currentTime):#TODO determine when to send control plane packets
-        # TODO check if ttl expired
-        for r in list(self._lsa_db.keys()):
-            self._lsa_db[r].ttl -= 1
-            if self._lsa_db[r].ttl == 0:
-                self._lsa_db.pop(r)
+        if self._id == "r4" and currentTime == 29:
+            pass
+        # check if ttl expired
+        # for r in list(self._lsa_db.keys()):
+        #     self._lsa_db[r].ttl -= 1
+        #     if self._lsa_db[r].ttl == 0:
+        #         self._lsa_db.pop(r)
 
-
-        link_down_detected = False
-        if "down" in interfaces2state.values():
-            link_down_detected = True
-            #print("{}: checking which interface is down".format(self._id))
-            for i, state in interfaces2state.items():
-                #print("interface {}".format(i))
-                #print(self._sentPerInterface)
-                if state=="down":
+        # check for link status
+        link_state_change = False
+        if self._lsa_db.get(self._id):
+            my_links = self._lsa_db.get(self._id).links
+        else:
+            my_links = {}
+        new_lsa = LSA(self._seq_no+1, 255, self._id, my_links, False)
+        for i, state in interfaces2state.items():    
+            if state=="down":
+                if i in self._down_detected_links:
+                    continue
+                else:
+                    link_state_change = True
+                    self._down_detected_links.append(i)
                     print("{}: {} is down".format(self._id, i))
-                    new_lsa = LSA(self._seq_no+1, 255, self._id, {k: v for k, v in self._lsa_db[self._id].links.items() if self._neighbors.get(i) != k}, False)
+                    new_links = {}
+                    for dest, c in self._lsa_db[self._id].links.items():
+                        if dest != self._neighbors[i]:
+                            new_links[dest] = c
+                    new_lsa.links = new_links
                     print(new_lsa)
-                    self._lsa_db[self._id] = new_lsa
-                    self._seq_no += 1
-                    for out_iface, d in self._neighbors.items():
-                        if out_iface in self._lsa_queue.keys() and out_iface != i:
-                            self._lsa_queue[out_iface].append(new_lsa)
-                            self._sentPerInterface[out_iface] = False
-                        elif out_iface != i:
-                            self._lsa_queue[out_iface] = [new_lsa]
-                            self._sentPerInterface[out_iface] = False
+                    # for d in self._lsa_db.keys():
+                    #     if i in self._fwd_table.getNextHops(d):
+                    #         self._fwd_table.removeEntry(d
+                    #self.compute_path()
+            elif state=="up":
+                if i in self._down_detected_links:
+                    link_state_change = True
+                    self._down_detected_links.remove(i)
+                    print("{}: link {} is now up".format(self._id, i))
+                    revived_link = {self._neighbors[i]: self._weights[i]}
+                    new_lsa.links.update(revived_link)
+                    print(new_lsa)
+                    print("my db:")
+                    print(self._lsa_db)
+                    #self.compute_path()
+        generate_periodic_lsa = self._fwd_table._table != {} and not currentTime%10
 
-                    #print(self._lsa_db)
-                    for d in self._lsa_db.keys():
-                        if i in self._fwd_table.getNextHops(d):
-                            self._fwd_table.removeEntry(d)
-            print("computing new path")
-            self.compute_path()
-        #print("{}: going through ifaces".format(self._id))
-        for i, state in interfaces2state.items():
-            if state=="up" and i in self._sentPerInterface:
-                if link_down_detected:
-                    print("sending control plane to find new path")
-                    del self._sentPerInterface[i]
-                    link_down_detected = False
-                    self.generateRoutingPacket(i)
-                elif currentTime <= 15 or not currentTime%5:
-                    if i in self._sentPerInterface:
-                        del self._sentPerInterface[i]
+        if link_state_change or (generate_periodic_lsa and self._lsa_db.get(self._id)): # send a lsa if new link down or up detected
+            self._lsa_db[self._id] = new_lsa
+            self._seq_no += 1
+            if link_state_change:
+                self.compute_path() 
+            for out_iface, d in self._neighbors.items():
+                if out_iface in self._lsa_queue.keys(): #and out_iface not in self._down_detected_links:
+                    self._lsa_queue[out_iface] = [old_lsa for old_lsa in self._lsa_queue[out_iface] if old_lsa.router_id == self._id and old_lsa.seq >= new_lsa.seq]
+                    self._lsa_queue[out_iface].append(new_lsa)
+                    self._sentPerInterface[out_iface] = False
+                else: #if out_iface not in self._down_detected_links:
+                    self._lsa_queue[out_iface] = [new_lsa]
+                    self._sentPerInterface[out_iface] = False
+            # if self._id == "r4":
+            #     print("queue: {}".format(self._lsa_queue))
+
+        # for i, state in interfaces2state.items():
+        #     if state=="up":
+        #         #  generate a periodic LSA
+        #         if (not currentTime%7) and self._lsa_db.get(self._id):
+        #             new_lsa = LSA(self._seq_no+1, 255, self._id, self._lsa_db[self._id].links, False)
+        #             self._seq_no += 1
+        #             self._lsa_queue[i].append(new_lsa)
+        #             self._sentPerInterface[i] = False
 
 
     "Processor of a new packet received by the router and destined to this routing algorithm."
@@ -174,8 +194,6 @@ class IGP(AbstractRoutingDaemon):
         #print("[IGP] Router {}: I have just received a routing packet with payload {} on interface {}".format(self._id,packet.getPayload().getData(),iface))
         #print("[IGP] router {}: received packet from {}".format(self._id, packet.getSource()))
         if packet.getType() == "BCAST": # hello packet
-            if self._id=="Phoenix" or self._id=="Dallas":
-                print("{} received BCAST from {}".format(self._id, packet.getSource()))
             self._known_routers.add(packet.getSource())
             new_link = {packet.getSource(): self._weights[iface]} # {destination: cost}'
             current = self._lsa_db.get(self._id)
@@ -185,15 +203,10 @@ class IGP(AbstractRoutingDaemon):
             if current:
                 current.links.update(new_link)
                 new_lsa = LSA(self._seq_no+1, 255, self._id, current.links, False)
-                if self._id=="Phoenix" or self._id=="Dallas":
-                    print("updating my existing lsa db entry")
             elif not current:
                 new_lsa = LSA(self._seq_no+1, 255, self._id, new_link, False)
-                if self._id=="Phoenix" or self._id=="Dallas":
-                    print("new lsa db self entry: {}".format(new_lsa))
                 self._lsa_db[self._id] = new_lsa
             # generate a new LSA about my new link
-            #print(new_lsa)
             self._seq_no += 1
             for out_iface, d in self._neighbors.items(): # send to all interfaces
                 if out_iface in self._lsa_queue.keys():
@@ -204,8 +217,6 @@ class IGP(AbstractRoutingDaemon):
                 else:
                     self._lsa_queue[out_iface] = [new_lsa]
                     self._sentPerInterface[out_iface] = False
-            # if self._id=="Phoenix" or self._id=="SaltLakeCity":
-            #     print("{} lsa queue: {}".format(self._id, self._lsa_queue))
 
             self._neighbors[iface] = packet.getSource() # {neighbor: interface}
             if iface in self._sentPerInterface:
@@ -214,23 +225,21 @@ class IGP(AbstractRoutingDaemon):
         if packet.getType() == "routing":
             data: List[LSA] = packet.getPayload().getData() # list of LSAs
             for lsa in data:
-                if self._id == "Phoenix" or self._id == "Dallas":
-                    print("{} received: {} from {}".format(self._id, lsa, self._neighbors[iface]))
                 stored = self._lsa_db.get(lsa.router_id)
-                #print("i have: {}".format(stored))
+                if self._id == "r6":
+                    print("{} received: {} from {}".format(self._id, lsa, self._neighbors[iface]))
+                    print("i have: {}".format(stored))
                 if not stored or lsa.seq > stored.seq:
                     self._last_seq_no = lsa.seq
                     stored_links = {} if not stored else stored.links
+                    self._known_routers.add(lsa.router_id)
+                    for d in lsa.links.keys():
+                        self._known_routers.add(d)
+                    if self._id == "r6":
+                        print("updating my entry")
+                    self._lsa_db[lsa.router_id] = lsa
+                    print("{} = {}?".format(stored_links, lsa.links))
                     if any(ls not in stored_links for ls in lsa.links) or any(ls not in lsa.links for ls in stored_links):
-                        if self._id == "Phoenix" or self._id == "Dallas":
-                            print("new link detected")
-                        self._known_routers.add(lsa.router_id)
-                        for d in lsa.links.keys():
-                            self._known_routers.add(d)
-                        self._lsa_db[lsa.router_id] = lsa
-                        #print(lsa)
-                        #self._sentPerInterface[iface] = True
-                       # self._sentPerInterface = {iface: self._sentPerInterface[iface]}
                         for out_iface, d in self._neighbors.items():
                             if out_iface in self._lsa_queue and out_iface != iface: #send to all interfaces except where it came from
                                 self._lsa_queue[out_iface].append(lsa)
@@ -238,8 +247,12 @@ class IGP(AbstractRoutingDaemon):
                             elif out_iface != iface:
                                 self._lsa_queue[out_iface] = [lsa]
                                 self._sentPerInterface[out_iface] = False
-                        
                         self.compute_path()
+                    else:
+                        print("new lsa with same data")
+                        self.compute_path()
+                        # new lsa with same data
+
                 elif lsa.seq < stored.seq:
                     #print("sending an updated lsa on interface {}".format(iface))
                     self._sentPerInterface[iface] = False
@@ -250,9 +263,6 @@ class IGP(AbstractRoutingDaemon):
                     #self.generateRoutingPacket(iface) # TODO
                 else:
                     # repeated lsa, run dijkstra if first time
-                   #print("lsa already exists") 
-                    if self._id == "Phoenix" or self._id == "Dallas":
-                        print("{} already knows about {}".format(self._id, lsa.router_id))
                     stored.dup_received = True
                     self._dups += 1
                     # TODO add iface back to list
@@ -274,12 +284,7 @@ class IGP(AbstractRoutingDaemon):
                 pkt = RoutingPacket(self._id)
                 payload = Payload()
                 if self._lsa_queue.get(iface):
-                    if self._id == "Phoenix" or self._id == "Dallas":
-                        pass
                     entries = self._lsa_queue[iface]
-                    # if self._id == "Phoenix" or self._id == "Dallas":
-                    #     print("{} is sending an lsa to {} about {}".format(self._id, self._neighbors[iface], entry.router_id))
-                    #pkt.setSequenceNumber(entry.seq)  # Increment sequence number for new LSA
                     for lsa in entries:
                         payload.addEntry(lsa)
                     pkt.setType("routing")
