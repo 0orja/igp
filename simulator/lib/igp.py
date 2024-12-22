@@ -3,8 +3,10 @@ from typing import List, Dict
 from routingAbstractions import AbstractRoutingDaemon
 from packet import RoutingPacket,Payload
 import networkx as nx
+import random
 
 INF = 10000
+TRCRT = 10000
 
 @dataclass
 class LSA:
@@ -34,10 +36,9 @@ class IGP(AbstractRoutingDaemon):
         self._inf = 10000
         self._seq_no = 0  # Initialize sequence number
         self._down_detected_links = []
+        self._traceroute = {}
     
     def compute_path(self):
-        if self._id == "r6":
-            print("RUNNING DIJKSTRA")
         paths = {router: {"distance": INF, "paths": []} for router in self._lsa_db}
         paths[self._id]["distance"] = 0
         paths[self._id]["paths"] = [[self._id]]
@@ -72,14 +73,9 @@ class IGP(AbstractRoutingDaemon):
             routers.remove(router)
         #print("done")
         if self._paths != paths:
-            # if self._id == "r5":
-            #     print("updating table")
             self.update_table(paths)
             self._paths = paths
        # print(paths)
-        if self._id == "r6":
-            #print(self._lsa_db)
-            print(paths)
         return paths
     
     def update_table(self, paths):
@@ -117,14 +113,14 @@ class IGP(AbstractRoutingDaemon):
 
     "Refresher that is run at the beginning of every simulation round."
     def update(self, interfaces2state, currentTime):#TODO determine when to send control plane packets
-        if self._id == "r4" and currentTime == 29:
-            pass
         # check if ttl expired
         # for r in list(self._lsa_db.keys()):
         #     self._lsa_db[r].ttl -= 1
         #     if self._lsa_db[r].ttl == 0:
         #         self._lsa_db.pop(r)
 
+        # if currentTime == 30 or currentTime == 15:
+        #     print(self._paths)
         # check for link status
         link_state_change = False
         if self._lsa_db.get(self._id):
@@ -145,11 +141,6 @@ class IGP(AbstractRoutingDaemon):
                         if dest != self._neighbors[i]:
                             new_links[dest] = c
                     new_lsa.links = new_links
-                    print(new_lsa)
-                    # for d in self._lsa_db.keys():
-                    #     if i in self._fwd_table.getNextHops(d):
-                    #         self._fwd_table.removeEntry(d
-                    #self.compute_path()
             elif state=="up":
                 if i in self._down_detected_links:
                     link_state_change = True
@@ -157,9 +148,6 @@ class IGP(AbstractRoutingDaemon):
                     print("{}: link {} is now up".format(self._id, i))
                     revived_link = {self._neighbors[i]: self._weights[i]}
                     new_lsa.links.update(revived_link)
-                    print(new_lsa)
-                    print("my db:")
-                    print(self._lsa_db)
                     #self.compute_path()
         generate_periodic_lsa = self._fwd_table._table != {} and not currentTime%10
 
@@ -176,17 +164,6 @@ class IGP(AbstractRoutingDaemon):
                 else: #if out_iface not in self._down_detected_links:
                     self._lsa_queue[out_iface] = [new_lsa]
                     self._sentPerInterface[out_iface] = False
-            # if self._id == "r4":
-            #     print("queue: {}".format(self._lsa_queue))
-
-        # for i, state in interfaces2state.items():
-        #     if state=="up":
-        #         #  generate a periodic LSA
-        #         if (not currentTime%7) and self._lsa_db.get(self._id):
-        #             new_lsa = LSA(self._seq_no+1, 255, self._id, self._lsa_db[self._id].links, False)
-        #             self._seq_no += 1
-        #             self._lsa_queue[i].append(new_lsa)
-        #             self._sentPerInterface[i] = False
 
 
     "Processor of a new packet received by the router and destined to this routing algorithm."
@@ -226,19 +203,13 @@ class IGP(AbstractRoutingDaemon):
             data: List[LSA] = packet.getPayload().getData() # list of LSAs
             for lsa in data:
                 stored = self._lsa_db.get(lsa.router_id)
-                if self._id == "r6":
-                    print("{} received: {} from {}".format(self._id, lsa, self._neighbors[iface]))
-                    print("i have: {}".format(stored))
                 if not stored or lsa.seq > stored.seq:
                     self._last_seq_no = lsa.seq
                     stored_links = {} if not stored else stored.links
                     self._known_routers.add(lsa.router_id)
                     for d in lsa.links.keys():
                         self._known_routers.add(d)
-                    if self._id == "r6":
-                        print("updating my entry")
                     self._lsa_db[lsa.router_id] = lsa
-                    print("{} = {}?".format(stored_links, lsa.links))
                     if any(ls not in stored_links for ls in lsa.links) or any(ls not in lsa.links for ls in stored_links):
                         for out_iface, d in self._neighbors.items():
                             if out_iface in self._lsa_queue and out_iface != iface: #send to all interfaces except where it came from
@@ -249,7 +220,7 @@ class IGP(AbstractRoutingDaemon):
                                 self._sentPerInterface[out_iface] = False
                         self.compute_path()
                     else:
-                        print("new lsa with same data")
+                        #TODO print("new lsa with same data")
                         self.compute_path()
                         # new lsa with same data
 
@@ -266,7 +237,9 @@ class IGP(AbstractRoutingDaemon):
                     stored.dup_received = True
                     self._dups += 1
                     # TODO add iface back to list
-                    
+        
+        if packet.getType() == "icmp":
+            print("[IGP] Router {}: I have just received an ICMP packet with payload {} from {}".format(self._id,packet.getPayload().getData(),packet.getSource()))
     "Generator of control-plane packet to be sent out of the input interface in the current round. It must return a RoutingPacket object, or None (if no packet needs to be sent)."
     def generateRoutingPacket(self, iface):
         pkt = None
@@ -276,11 +249,9 @@ class IGP(AbstractRoutingDaemon):
             if not self._lsa_queue:
                 pkt = RoutingPacket(self._id)
                 payload = Payload()
-                #print("{} creating hello packet on {}".format(self._id, iface))
                 payload.addEntry("Hello world, here is router {} speaking".format(self._id))
                 pkt.setType("BCAST")
             else:
-                #print("{} creating lsa packet on interface {} with payload".format(self._id, iface))
                 pkt = RoutingPacket(self._id)
                 payload = Payload()
                 if self._lsa_queue.get(iface):
@@ -298,15 +269,74 @@ class IGP(AbstractRoutingDaemon):
 
     "Method called by Router, once per traceroute, to get all the packets to send out in order to implement the traceroute."
     def getTracerouteProbes(self, destination):
-        return []
+        self._traceroute["header"] = "Traceroute {} -> {}".format(self._id, destination)
+        self._traceroute["hops"] = {}
+        self._traceroute["completion"] = {"completed":False, "num_to_reach": 0, "num_reached": 0}
+        self._traceroute["num"] = 0
+        self._traceroute["destination"] = destination
+        paths = self._paths.get(destination)["paths"]
+        print(paths)
+        self._traceroute["traversed"] = []
+        packets = []
+        for path_index, path in enumerate(paths):
+            path.pop(0)
+            if len(path) > self._traceroute["num"]:
+                self._traceroute["num"] = len(path)
+            path_port = random.randint(50000, 60000)
+            for i in range(1,len(path)+1):
+                pkt = RoutingPacket(self._id)
+                payload = Payload()
+                pkt.setTtl(i)
+                pkt.setType("TRACEROUTE")
+                pkt._dst = destination
+                pkt._dstport = path_port
+                pkt.setSequenceNumber(TRCRT+i)
+                payload.addEntry({"destination": destination})
+                print(pkt)
+                packets.append(pkt)
+        #packets.sort(key=lambda x: x._seq)
+        self._traceroute["traversed"] = paths
+        return packets
 
     "Method called by Router every time it receives an ICMP packet."
     def processPossibleTracerouteReply(self, icmpPacket):
-        pass
+        #print("[IGP] Router {}: I have just received an ICMP packet with  {} from {}".format(self._id,icmpPacket.getPayload().getData(),icmpPacket.getSource()))
+        source = icmpPacket.getSource()
+        seq = icmpPacket.getSequenceNumber()-TRCRT
+        print(self._traceroute["hops"])
+        # for path in self._traceroute["traversed"]:
+        #     for hop in path:
+        #         if source == hop:
+        #             path.remove(hop)
+        if not self._traceroute["hops"].get(seq):
+            
+            self._traceroute["hops"][seq] = source
+            print(self._traceroute["hops"])
+        else:
+            self._traceroute["hops"][seq] += ",{}".format(source)
+            print(self._traceroute["hops"])
+        print(self._traceroute["hops"])
+        print("source: {}, destination: {}".format(icmpPacket.getSource(), self._traceroute["destination"]))
+        print("seq: {}, needed num: {}".format(seq, self._traceroute["num"]))
+        if icmpPacket.getSource() == self._traceroute["destination"] and seq == self._traceroute["num"]:
+            print("completed")
+            self._traceroute["completion"]["completed"] = True
 
     "Method that should return the output of the last completed traceroute."
     def getTracerouteOutput(self):
-        return ""
+        output = ""
+        if self._traceroute and self._traceroute["completion"]["completed"]:
+            output += self._traceroute["header"]
+            output += "\n"
+            sorted_hops = {k: v for k, v in sorted(self._traceroute["hops"].items(), key=lambda item: item[0])}
+            last_index = 0
+            for ind, val in sorted_hops.items():
+                while ind != last_index + 1:
+                    last_index += 1
+                    output += "{}: \n".format(last_index)
+                last_index = ind
+                output += "{}: {}\n".format(ind, val)
+        return output
 
     ## Debug methods ##
 
