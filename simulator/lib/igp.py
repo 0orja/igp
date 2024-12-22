@@ -1,12 +1,13 @@
 from dataclasses import dataclass
 from typing import List, Dict
 from routingAbstractions import AbstractRoutingDaemon
-from packet import RoutingPacket,Payload
+from packet import RoutingPacket,Payload,Packet,PacketTypes
 import networkx as nx
 import random
 
 INF = 10000
 TRCRT = 10000
+SRC_PORT_START = 50000
 
 @dataclass
 class LSA:
@@ -272,30 +273,30 @@ class IGP(AbstractRoutingDaemon):
         self._traceroute["header"] = "Traceroute {} -> {}".format(self._id, destination)
         self._traceroute["hops"] = {}
         self._traceroute["completion"] = {"completed":False, "num_to_reach": 0, "num_reached": 0}
-        self._traceroute["num"] = 0
         self._traceroute["destination"] = destination
+        self._traceroute["last_seq_no"] = 0
+        self._hops = 0
         paths = self._paths.get(destination)["paths"]
-        print(paths)
-        self._traceroute["traversed"] = []
         packets = []
+        paths.sort(key=lambda x: len(x),reverse=True)
+        seq = 0
         for path_index, path in enumerate(paths):
             path.pop(0)
-            if len(path) > self._traceroute["num"]:
-                self._traceroute["num"] = len(path)
-            path_port = random.randint(50000, 60000)
+            #random.randint(0, 10)
+            path_port = SRC_PORT_START + path_index
             for i in range(1,len(path)+1):
-                pkt = RoutingPacket(self._id)
-                payload = Payload()
+                pkt = Packet(self._id, destination)
+                pkt.setType(PacketTypes.DATA.value)
                 pkt.setTtl(i)
-                pkt.setType("TRACEROUTE")
-                pkt._dst = destination
-                pkt._dstport = path_port
+                pkt.setSourcePort(path_port)
+                pkt.setDestinationPort(2300)
                 pkt.setSequenceNumber(TRCRT+i)
+                payload = Payload()
                 payload.addEntry({"destination": destination})
-                print(pkt)
                 packets.append(pkt)
-        #packets.sort(key=lambda x: x._seq)
-        self._traceroute["traversed"] = paths
+                self._traceroute["last_seq_no"] = max(i, self._traceroute["last_seq_no"])
+                seq += 1
+        self._traceroute["packets"] = packets
         return packets
 
     "Method called by Router every time it receives an ICMP packet."
@@ -303,35 +304,34 @@ class IGP(AbstractRoutingDaemon):
         #print("[IGP] Router {}: I have just received an ICMP packet with  {} from {}".format(self._id,icmpPacket.getPayload().getData(),icmpPacket.getSource()))
         source = icmpPacket.getSource()
         seq = icmpPacket.getSequenceNumber()-TRCRT
-        print(self._traceroute["hops"])
-        # for path in self._traceroute["traversed"]:
-        #     for hop in path:
-        #         if source == hop:
-        #             path.remove(hop)
+        port = icmpPacket.getDestinationPort()
+        for packet_index in range(len(self._traceroute["packets"])):
+            if seq == self._traceroute["packets"][packet_index].getSequenceNumber() and port == self._traceroute["packets"][packet_index].getSourcePort():
+                self._traceroute["packets"].pop(packet_index)
+                break
         if not self._traceroute["hops"].get(seq):
-            
+            print("new")
             self._traceroute["hops"][seq] = source
-            print(self._traceroute["hops"])
-        else:
+        else: #if self._traceroute["hops"].get(seq) != source:
+            print('exists')
             self._traceroute["hops"][seq] += ",{}".format(source)
-            print(self._traceroute["hops"])
-        print(self._traceroute["hops"])
-        print("source: {}, destination: {}".format(icmpPacket.getSource(), self._traceroute["destination"]))
-        print("seq: {}, needed num: {}".format(seq, self._traceroute["num"]))
-        if icmpPacket.getSource() == self._traceroute["destination"] and seq == self._traceroute["num"]:
-            print("completed")
+        self._hops += 1
+        # if icmpPacket.getSource() == self._traceroute["destination"]:
+        if seq >= self._traceroute["last_seq_no"]:
+            #print("completed")
             self._traceroute["completion"]["completed"] = True
 
     "Method that should return the output of the last completed traceroute."
     def getTracerouteOutput(self):
         output = ""
+        print(self._traceroute.get("hops"))
         if self._traceroute and self._traceroute["completion"]["completed"]:
             output += self._traceroute["header"]
             output += "\n"
             sorted_hops = {k: v for k, v in sorted(self._traceroute["hops"].items(), key=lambda item: item[0])}
             last_index = 0
             for ind, val in sorted_hops.items():
-                while ind != last_index + 1:
+                while ind != last_index+1:
                     last_index += 1
                     output += "{}: \n".format(last_index)
                 last_index = ind
